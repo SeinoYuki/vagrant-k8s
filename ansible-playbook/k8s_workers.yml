@@ -1,0 +1,37 @@
+- hosts: workers
+  become: yes
+  become_user: root
+  gather_facts: True
+
+  tasks:
+    - name: Delete config.toml
+      file: 
+        path:  /etc/containerd/config.toml
+        state: absent
+
+    - name: restart containerd
+      systemd:
+        name: containerd.service
+        state: restarted
+        
+    ## k8sノードをリセット
+    - name: Kubeadm reset v1.11 or later
+      command: kubeadm reset -f
+
+    ## k8sクラスタへ参加
+    - name: Join the node to cluster
+      command: sh /home/vagrant/sync/join-command.sh
+
+    ## kubeletのDNSのIPアドレスを変更
+    - name: Change config.yaml
+      replace:
+        dest: /var/lib/kubelet/config.yaml
+        regexp: '10.96.0.10'
+        replace: 10.32.0.10
+
+    ## kubeletをリスタートして変更を反映
+    - name: Daemon-reload and restart kubelet
+      systemd:
+        state: restarted
+        daemon_reload: yes
+        name: kubelet

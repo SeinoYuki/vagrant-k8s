@@ -1,0 +1,163 @@
+- hosts: all
+  become: yes
+  gather_facts: True
+
+  tasks:
+  ## yum repositoryの設定
+  - name: yum update
+    yum : name=* state=latest 
+
+  - name: Install yum-utils
+    yum:
+      name: "{{ item }}"
+      state: latest
+    with_list:
+      - yum-utils
+      - device-mapper-persistent-data
+      - lvm2
+
+  - name: Add Docker repo
+    get_url:
+      url: https://download.docker.com/linux/centos/docker-ce.repo
+      dest: /etc/yum.repos.d/docker-ce.repo
+    become: yes
+
+  - name: Add kubernetes repo
+    yum_repository:
+      name: kubernetes
+      description: kubernetes repo
+      baseurl: https://packages.cloud.google.com/yum/repos/kubernetes-el7-x86_64
+      gpgcheck: no
+      enabled: yes
+
+  ## Dockerのインストール
+  - name: Install docker
+    yum:
+      name: docker-ce
+      state: present
+
+  - name: Docker setting mkdir
+    file:
+      path: /etc/systemd/system/docker.service.d
+      state: directory
+      owner: root
+      group: root
+      mode: 0755
+
+  - name: Docker setting option file
+    copy:
+      src: option.conf
+      dest: /etc/systemd/system/docker.service.d/option.conf
+
+  - name: Start service docker, and enable service  docker
+    systemd:
+      name: docker.service
+      state: started
+      daemon-reload: yes
+      enabled: yes
+
+  ## ユーザーvagrantをdockerグループにいれる
+  - name: Usermod -aG docker vagrant
+    user:
+      name: vagrant
+      groups: docker
+
+  ## カーネル設定変更
+  - name: Modprebe br_netfilter
+    command: modprobe br_netfilter
+
+  - name: Set sysctl
+    sysctl:
+      name: net.bridge.bridge-nf-call-iptables
+      value: "1"
+      sysctl_set: yes
+      sysctl_file: /etc/sysctl.conf
+      state: present
+      reload: yes
+
+  ## 事前設定
+  - name: Disable SELinux
+    command: setenforce 0
+
+  - name: Disable SELinux on reboot
+    selinux:
+      state: disabled
+
+  - name: Ensure net.bridge.bridge-nf-call-iptables is set to 1
+    sysctl:
+     name: net.bridge.bridge-nf-call-iptables
+     value: 1
+     state: present
+
+  - name: Swap off
+    command: swapoff -a
+
+  - name: Diable firewalld
+    systemd:
+      name: firewalld
+      state: stopped
+      enabled: no
+
+  ## Kubernetes のインストール
+  - name: Install kubelet kubeadm
+    yum:
+      name: "{{ packages }}"
+    vars:
+      packages:
+        - kubelet
+        - kubeadm
+      state: present
+
+  - name: Start kubelet
+    systemd:
+      name: kubelet.service
+      state: started
+      enabled: yes
+
+  - name: Install kubectl
+    yum:
+      name: kubectl
+      state: present
+      allow_downgrade: yes
+
+  ## HostOnly Interface の IPアドレス取得
+  - name: Install net-tools
+    yum:
+      name: net-tools
+      state: present
+
+  - name: Getting hostonly ip address
+    command: ifconfig eth1
+    register: ip
+  - debug: var=ip.stdout_lines[1].split('inet')[1].split(' ')[1]
+
+  ## 10-kubeadmin.conf に --node-ipを追加
+  - name: Oopy /usr/lib/systemd/system/kubelet.service.d to /etc/systemd/system
+    copy:
+      src: /usr/lib/systemd/system/kubelet.service.d/
+      dest: /etc/systemd/system/kubelet.service.d/
+      owner: root
+      group: root
+      mode: 0755
+
+  - name: Change 10-kubeadm.conf for v1.11 or later
+    replace:
+      dest: /etc/systemd/system/kubelet.service.d/10-kubeadm.conf
+      regexp: 'KUBELET_EXTRA_ARGS$'
+      replace: KUBELET_EXTRA_ARGS --node-ip={{ ip.stdout_lines[1].split('inet')[1].split(' ')[1] }} --cluster-dns=10.32.0.10
+
+  ## 変更を反映
+  - name: Daemon-reload and restart kubelet
+    systemd:
+      name: kubelet.service
+      state: restarted
+      daemon_reload: yes
+
+  ## ホストとの共有ディレクトリ作成
+  - name: Make sync directory
+    file:
+      path: /home/vagrant/sync
+      state: directory
+      owner: vagrant
+      group: vagrant
+      mode: '0755'
